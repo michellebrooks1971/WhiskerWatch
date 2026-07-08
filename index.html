@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Whisker Watch — Cat Health &amp; Wellness</title>
+  <meta name="description" content="Track your cats' wellbeing, medications, flea & worming treatments and vet visits.">
+  <meta name="theme-color" content="#c96f4a">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <img src="icon.svg" alt="" class="logo">
+      <div class="brand-text">
+        <h1>Whisker Watch</h1>
+        <span class="tagline">cat health &amp; wellness</span>
+      </div>
+    </div>
+    <div class="head-right">
+      <span id="sync" class="sync s-local"><span class="sync-dot"></span>…</span>
+      <button class="icon-btn" data-act="settings-open" aria-label="Settings" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <nav id="nav" aria-label="Sections">
+    <button class="nav-btn" data-act="nav" data-route="home"><span class="nav-ico">🏠</span><span class="nav-label">Home</span><span class="badge"></span></button>
+    <button class="nav-btn" data-act="nav" data-route="cats"><span class="nav-ico">🐱</span><span class="nav-label">Cats</span><span class="badge"></span></button>
+    <button class="nav-btn" data-act="nav" data-route="log"><span class="nav-ico">📋</span><span class="nav-label">Daily log</span><span class="badge"></span></button>
+    <button class="nav-btn" data-act="nav" data-route="meds"><span class="nav-ico">💊</span><span class="nav-label">Meds</span><span class="badge"></span></button>
+    <button class="nav-btn" data-act="nav" data-route="treatments"><span class="nav-ico">🛡️</span><span class="nav-label">Flea &amp; worm</span><span class="badge"></span></button>
+    <button class="nav-btn" data-act="nav" data-route="vet"><span class="nav-ico">🩺</span><span class="nav-label">Vet</span><span class="badge"></span></button>
+  </nav>
+
+  <main id="view" aria-live="polite"></main>
+
+  <div id="modal-root"></div>
+  <div id="lightbox-root"></div>
+  <div id="toast-root"></div>
+  <input type="file" id="import-file" accept=".json,application/json" hidden>
+
+  <script src="js/util.js"></script>
+  <script src="js/store.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

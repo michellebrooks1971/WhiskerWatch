@@ -1,0 +1,12 @@
+{
+  "name": "Whisker Watch",
+  "short_name": "Whiskers",
+  "description": "Cat health & wellness tracker — daily logs, medications, flea & worming schedules, vet visits",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#faf6f0",
+  "theme_color": "#c96f4a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
