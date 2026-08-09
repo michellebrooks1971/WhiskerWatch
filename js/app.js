@@ -4,7 +4,7 @@
   'use strict';
   const U = window.U, S = window.Store, UI = window.UI, V = window.Views;
 
-  const ROUTES = ['home', 'cats', 'log', 'meds', 'treatments', 'vet'];
+  const ROUTES = ['home', 'cats', 'log', 'meds', 'treatments', 'vaccines', 'vet'];
   const notified = {};          // session-only: which timed doses we've already popped
   let lastDay = U.todayISO();   // for midnight rollover while the app stays open
 
@@ -25,6 +25,7 @@
   function refreshBadges() {
     setBadge('meds', S.remainingToday());
     setBadge('treatments', S.overdueTreatmentsCount());
+    setBadge('vaccines', S.overdueVaxCount());
     setBadge('vet', S.visitsSoonCount());
   }
   function setBadge(route, n) {
@@ -85,6 +86,8 @@
     if (doses) bits.push(U.plural(doses, 'dose') + ' to give');
     const overdue = S.overdueTreatmentsCount();
     if (overdue) bits.push(U.plural(overdue, 'treatment') + ' overdue');
+    const vaxOverdue = S.overdueVaxCount();
+    if (vaxOverdue) bits.push(U.plural(vaxOverdue, 'vaccination') + ' overdue');
     const visits = S.visitsUpcoming().filter(function (v) { return v.date === today; });
     visits.forEach(function (v) {
       const cat = S.getCat(v.catId);
@@ -181,6 +184,7 @@
 
       // cats
       case 'cat-add': UI.closeModal(); V.catModal(); break;
+      case 'cat-profile': V.catProfileModal(id); break;
       case 'cat-edit': V.catModal(id); break;
       case 'cats-archived-toggle': V.state.showArchived = !V.state.showArchived; render(); break;
       case 'cat-archive-toggle': {
@@ -213,6 +217,7 @@
         break;
       case 'log-today': V.state.logDate = U.todayISO(); render(); break;
       case 'log-filter': V.state.logFilter = el.dataset.cat; render(); break;
+      case 'log-range': V.state.logRange = el.dataset.range; render(); break;
 
       // meds
       case 'med-add': V.medModal(null, V.state.medFilter !== 'all' ? V.state.medFilter : undefined); break;
@@ -243,6 +248,25 @@
         if (!t) break;
         S.removeHistoryEntry(id, Number(el.dataset.idx));
         V.treatmentModal(t.catId, id); // refresh the open modal
+        break;
+      }
+
+      // vaccinations
+      case 'vax-add': V.vaxModal(el.dataset.cat); break;
+      case 'vax-edit': {
+        const v = S.getVax(id);
+        if (v) V.vaxModal(v.catId, id);
+        break;
+      }
+      case 'vax-given': V.givenModal(id, true); break;
+      case 'vax-delete':
+        if (confirm('Delete this vaccination and its history?')) { S.deleteVax(id); UI.closeModal(); }
+        break;
+      case 'vax-hist-del': {
+        const v = S.getVax(id);
+        if (!v) break;
+        S.removeVaxHistoryEntry(id, Number(el.dataset.idx));
+        V.vaxModal(v.catId, id); // refresh the open modal
         break;
       }
 
@@ -293,6 +317,17 @@
     if (el.dataset.act === 'dose-toggle') dispatch(el);
     if (el.dataset.act === 'log-date' && U.isISO(el.value)) {
       V.state.logDate = el.value > U.todayISO() ? U.todayISO() : el.value;
+      render();
+    }
+    // custom history range pickers — keep from <= to and never in the future
+    if (el.dataset.act === 'log-range-from' && U.isISO(el.value)) {
+      V.state.logFrom = el.value > U.todayISO() ? U.todayISO() : el.value;
+      if (V.state.logFrom > V.state.logTo) V.state.logTo = V.state.logFrom;
+      render();
+    }
+    if (el.dataset.act === 'log-range-to' && U.isISO(el.value)) {
+      V.state.logTo = el.value > U.todayISO() ? U.todayISO() : el.value;
+      if (V.state.logTo < V.state.logFrom) V.state.logFrom = V.state.logTo;
       render();
     }
   });

@@ -11,7 +11,11 @@
     logDate: U.todayISO(),
     medFilter: 'all',
     logFilter: 'all',
-    showArchived: false
+    showArchived: false,
+    // history range under the daily log: preset number of days, 'all', or 'custom'
+    logRange: '14',
+    logFrom: U.addDaysISO(U.todayISO(), -30),
+    logTo: U.todayISO()
   };
 
   function section(title, body, headExtra) {
@@ -158,6 +162,7 @@
     const doses = S.dosesDue(today);
     const remaining = doses.filter(function (r) { return !r.given; }).length;
     const alerts = S.treatmentAlerts();
+    const vAlerts = S.vaxAlerts();
     const upcoming = S.visitsUpcoming().filter(function (v) { return v.date <= U.addDaysISO(today, 14); });
     const unlogged = catsList.filter(function (c) { return !S.logFor(c.id, today); });
 
@@ -167,6 +172,10 @@
     if (od) bits.push(U.plural(od, 'treatment') + ' overdue');
     const soon = alerts.length - od;
     if (soon) bits.push(U.plural(soon, 'treatment') + ' due soon');
+    const vOd = vAlerts.filter(function (a) { return a.info.state === 'overdue'; }).length;
+    if (vOd) bits.push(U.plural(vOd, 'vaccination') + ' overdue');
+    const vSoon = vAlerts.length - vOd;
+    if (vSoon) bits.push(U.plural(vSoon, 'vaccination') + ' due soon');
     const vToday = upcoming.filter(function (v) { return v.date === today; }).length;
     if (vToday) bits.push('vet visit today');
     const summary = bits.length ? bits.join(' · ') : 'Nothing urgent — enjoy the purrs 🐈';
@@ -200,6 +209,19 @@
       }).join('') + '</div>';
     }
     html += section('Treatments due', trBody);
+
+    // vaccinations due / overdue
+    if (vAlerts.length) {
+      html += section('Vaccinations due', '<div class="card">' + vAlerts.map(function (a) {
+        return '<div class="card-row">' +
+          UI.avatar(a.cat, 'a-sm') +
+          '<span class="dr-main"><b>' + U.esc(a.cat.name) + '</b> — ' + U.esc(a.t.name) +
+          '<span class="muted small">Next due ' + U.fmtDMY(a.t.nextDue) + '</span></span>' +
+          UI.dueChip(a.t, S.VAX_SOON_DAYS) +
+          '<button class="btn btn-small" data-act="vax-given" data-id="' + a.t.id + '">✓ Given</button>' +
+          '</div>';
+      }).join('') + '</div>');
+    }
 
     // vet
     if (upcoming.length) {
@@ -244,16 +266,19 @@
         .filter(Boolean).join(' · ');
       const medCount = S.medsForCat(c.id, true).length;
       const earliest = S.catEarliestDue(c.id);
+      const earliestVax = S.catEarliestVaxDue(c.id);
       const logs = S.doc.logs.filter(function (l) { return l.catId === c.id; });
       let lastLog = '';
       logs.forEach(function (l) { if (l.date > lastLog) lastLog = l.date; });
-      return '<button class="cat-card" data-act="cat-edit" data-id="' + c.id + '">' +
+      return '<button class="cat-card" data-act="cat-profile" data-id="' + c.id + '">' +
         UI.avatar(c, 'a-lg') +
         '<div class="cc-body"><div class="cc-name">' + U.esc(c.name) + '</div>' +
         '<div class="muted small">' + U.esc(meta || '—') + '</div>' +
         '<div class="chip-row">' +
+        (c.allergies.length ? '<span class="chip c-bad">⚠️ ' + U.plural(c.allergies.length, 'allergy').replace('allergys', 'allergies') + '</span>' : '') +
         (medCount ? '<span class="chip c-accent">' + U.plural(medCount, 'med') + '</span>' : '') +
         (earliest ? UI.dueChip({ nextDue: earliest }) : '<span class="chip c-muted">No treatments</span>') +
+        (earliestVax ? UI.dueChip({ nextDue: earliestVax }, S.VAX_SOON_DAYS).replace('">', '">💉 ') : '') +
         '</div>' +
         '<div class="muted small">' + (lastLog ? (lastLog === U.todayISO() ? 'Logged today ✓' : 'Last log ' + U.fmtShort(lastLog)) : 'No wellness logs yet') + '</div>' +
         '</div></button>';
@@ -264,7 +289,7 @@
         (state.showArchived ? 'Hide' : 'Show') + ' archived (' + archived.length + ')</button></div>';
       if (state.showArchived) {
         html += '<div class="cards-grid dim">' + archived.map(function (c) {
-          return '<button class="cat-card" data-act="cat-edit" data-id="' + c.id + '">' +
+          return '<button class="cat-card" data-act="cat-profile" data-id="' + c.id + '">' +
             UI.avatar(c, 'a-lg') +
             '<div class="cc-body"><div class="cc-name">' + U.esc(c.name) + '</div>' +
             '<div class="muted small">Archived</div></div></button>';
@@ -276,7 +301,7 @@
 
   function catModal(id) {
     const cat = id ? S.getCat(id) : null;
-    const c = cat || { name: '', dob: '', sex: '', breed: '', colour: S.CAT_COLOURS[Math.floor(Math.random() * S.CAT_COLOURS.length)], photo: '', notes: '' };
+    const c = cat || { name: '', dob: '', sex: '', breed: '', colour: S.CAT_COLOURS[Math.floor(Math.random() * S.CAT_COLOURS.length)], photo: '', notes: '', allergies: [] };
     const swatches = S.CAT_COLOURS.map(function (col) {
       return '<label class="swatch"><input type="radio" name="colour" value="' + col + '"' + (col === c.colour ? ' checked' : '') + '>' +
         '<span style="background:' + col + '"></span></label>';
@@ -300,7 +325,11 @@
         (c.photo ? '<button type="button" class="btn btn-small btn-ghost" id="photo-remove">Remove</button>' : '') +
         '</div>') +
       '<input type="hidden" name="photo" value="' + U.esc(c.photo) + '">' +
-      UI.field('Notes', '<textarea name="notes" rows="3" placeholder="Microchip no., desexed, allergies, quirks…">' + U.esc(c.notes) + '</textarea>') +
+      UI.field('Notes', '<textarea name="notes" rows="3" placeholder="Microchip no., desexed, quirks…">' + U.esc(c.notes) + '</textarea>') +
+      '<div class="field"><span class="f-label">⚠️ Allergies &amp; adverse reactions</span>' +
+      '<div id="alg-rows"></div>' +
+      '<button type="button" class="btn btn-small btn-ghost" id="alg-add">+ Add allergy / reaction</button>' +
+      '<span class="f-hint">Include reactions to medications — they’ll show as a warning whenever you add a med for this cat.</span></div>' +
       '<div class="modal-foot">' +
       (cat ? '<button type="button" class="btn btn-ghost" data-act="cat-archive-toggle" data-id="' + cat.id + '">' + (cat.archived ? 'Restore' : 'Archive') + '</button>' +
         '<button type="button" class="btn btn-danger-ghost" data-act="cat-delete" data-id="' + cat.id + '">Delete</button>' : '') +
@@ -313,6 +342,35 @@
       body: body,
       onOpen: function (wrap) {
         const form = U.$('#cat-form', wrap);
+
+        // ---- allergy row editor (rows are plain DOM so typed text survives add/remove) ----
+        const algBox = U.$('#alg-rows', wrap);
+        function algRow(a) {
+          a = a || { substance: '', severity: 'mild', reaction: '' };
+          const row = document.createElement('div');
+          row.className = 'alg-row';
+          row.innerHTML =
+            '<input class="alg-sub" maxlength="80" placeholder="Substance / medication" value="' + U.esc(a.substance) + '">' +
+            '<select class="alg-sev">' + Object.keys(S.SEVERITIES).map(function (k) {
+              return '<option value="' + k + '"' + (a.severity === k ? ' selected' : '') + '>' + S.SEVERITIES[k] + '</option>';
+            }).join('') + '</select>' +
+            '<input class="alg-re" maxlength="300" placeholder="Reaction (what happened)" value="' + U.esc(a.reaction) + '">' +
+            '<button type="button" class="icon-btn alg-x" aria-label="Remove">✕</button>';
+          U.$('.alg-x', row).addEventListener('click', function () { row.remove(); });
+          algBox.appendChild(row);
+        }
+        (c.allergies || []).forEach(algRow);
+        U.$('#alg-add', wrap).addEventListener('click', function () { algRow(); });
+        function readAllergies() {
+          return U.$$('.alg-row', algBox).map(function (row) {
+            return {
+              substance: U.$('.alg-sub', row).value,
+              severity: U.$('.alg-sev', row).value,
+              reaction: U.$('.alg-re', row).value
+            };
+          }).filter(function (a) { return a.substance.trim(); });
+        }
+
         const photoInput = U.$('#cat-photo', wrap);
         photoInput.addEventListener('change', function () {
           const f = photoInput.files && photoInput.files[0];
@@ -334,7 +392,7 @@
             id: cat ? cat.id : undefined,
             name: fd.get('name'), dob: fd.get('dob'), sex: fd.get('sex'),
             breed: fd.get('breed'), colour: fd.get('colour'), photo: fd.get('photo'),
-            notes: fd.get('notes')
+            notes: fd.get('notes'), allergies: readAllergies()
           });
           UI.closeModal();
           UI.toast(cat ? 'Updated ' + fd.get('name') + '.' : 'Welcome, ' + fd.get('name') + '! 🐾');
@@ -382,12 +440,25 @@
         '</button>';
     }).join('') + '</div>';
 
-    // recent entries
-    const recent = S.recentLogs(14).filter(function (l) {
+    // history — preset ranges or a custom from/to window
+    const RANGES = [['14', '2 weeks'], ['30', '1 month'], ['90', '3 months'], ['180', '6 months'], ['365', '1 year'], ['all', 'All'], ['custom', 'Custom…']];
+    let from = '', to = '';
+    if (state.logRange === 'custom') { from = state.logFrom; to = state.logTo; }
+    else if (state.logRange !== 'all') { from = U.addDaysISO(today, -Number(state.logRange)); to = today; }
+
+    const recent = S.logsInRange(from, to).filter(function (l) {
       if (state.logFilter !== 'all' && l.catId !== state.logFilter) return false;
       const cat = S.getCat(l.catId);
       return cat && !cat.archived;
     });
+
+    const rangeChips = '<div class="chip-row">' + RANGES.map(function (r) {
+      return '<button class="chip-btn' + (state.logRange === r[0] ? ' on' : '') + '" data-act="log-range" data-range="' + r[0] + '">' + r[1] + '</button>';
+    }).join('') + '</div>';
+    const customInputs = state.logRange === 'custom'
+      ? '<div class="range-custom"><label class="small muted">From <input type="date" data-act="log-range-from" value="' + state.logFrom + '" max="' + today + '"></label>' +
+        '<label class="small muted">To <input type="date" data-act="log-range-to" value="' + state.logTo + '" max="' + today + '"></label></div>'
+      : '';
     const filters = '<div class="chip-row">' +
       '<button class="chip-btn' + (state.logFilter === 'all' ? ' on' : '') + '" data-act="log-filter" data-cat="all">All</button>' +
       catsList.map(function (c) {
@@ -396,20 +467,26 @@
 
     let recentBody;
     if (!recent.length) {
-      recentBody = '<p class="muted pad-s">No entries in the last fortnight.</p>';
+      recentBody = '<p class="muted pad-s">No entries in this range.</p>';
     } else {
-      recentBody = '<div class="card">' + recent.map(function (l) {
+      // cap the rendered list so an "all time" range stays snappy
+      const MAX_ROWS = 200;
+      recentBody = '<div class="card">' + recent.slice(0, MAX_ROWS).map(function (l) {
         const cat = S.getCat(l.catId);
         return '<button class="card-row row-btn" data-act="log-add" data-cat="' + l.catId + '" data-date="' + l.date + '">' +
           UI.avatar(cat, 'a-sm') +
-          '<span class="dr-main"><b>' + U.esc(cat.name) + '</b> <span class="muted small">' + U.fmtShort(l.date) + '</span>' +
+          '<span class="dr-main"><b>' + U.esc(cat.name) + '</b> <span class="muted small">' + U.fmtDMY(l.date) + '</span>' +
           '<span class="muted small">' + U.esc((l.wellness || l.diet || '').slice(0, 90)) + '</span></span>' +
           (l.media && l.media.length ? '<span class="chip c-muted">' + (l.media.some(function (m) { return m.type === 'video'; }) ? '🎥' : '📎') + ' ' + l.media.length + '</span>' : '') +
           appetiteChip(l.appetite) +
           '</button>';
-      }).join('') + '</div>';
+      }).join('') + '</div>' +
+      (recent.length > MAX_ROWS ? '<p class="muted small pad-s">Showing the first ' + MAX_ROWS + ' of ' + recent.length + ' entries — narrow the range or filter by cat to see the rest.</p>' : '');
     }
-    html += section('Last 14 days', filters + recentBody);
+    const rangeTitle = state.logRange === 'all' ? 'All entries'
+      : state.logRange === 'custom' ? 'Entries ' + U.fmtDMY(from) + ' – ' + U.fmtDMY(to)
+      : 'Last ' + (RANGES.find(function (r) { return r[0] === state.logRange; }) || ['', '?'])[1].replace('1 ', '');
+    html += section(rangeTitle + (recent.length ? ' (' + recent.length + ')' : ''), rangeChips + customInputs + filters + recentBody);
     return html;
   }
 
@@ -586,6 +663,7 @@
     const body =
       '<form id="med-form">' +
       UI.field('Cat', UI.catSelect('catId', m.catId, med ? S.allCats() : S.activeCats())) +
+      '<div id="med-allergy-warn">' + allergyStrip(S.getCat(m.catId)) + '</div>' +
       UI.field('Medication *', '<input name="name" required maxlength="60" value="' + U.esc(m.name) + '" placeholder="e.g. Meloxicam, Amoxicillin">') +
       UI.field('Dose', '<input name="dose" maxlength="60" value="' + U.esc(m.dose) + '" placeholder="e.g. ½ tablet, 0.5 mL on food">') +
       UI.field('Times per day', '<select name="timesPerDay">' + [1, 2, 3, 4].map(function (n) {
@@ -611,6 +689,10 @@
       body: body,
       onOpen: function (wrap) {
         const form = U.$('#med-form', wrap);
+        // refresh the allergy warning if a different cat is picked
+        form.elements.catId.addEventListener('change', function () {
+          U.$('#med-allergy-warn', wrap).innerHTML = allergyStrip(S.getCat(form.elements.catId.value));
+        });
         form.elements.timesPerDay.addEventListener('change', function () {
           const per = Number(form.elements.timesPerDay.value);
           const current = [];
@@ -643,7 +725,7 @@
   function treatments() {
     const catsList = S.activeCats();
     let html = '<div class="page-head"><h1>Flea, worming & parasite treatments</h1>' +
-      '<p class="muted">Tick a treatment off when it’s given and the next due date rolls forward automatically. Up to ' + S.MAX_TREATMENTS + ' per cat, each with its own schedule.</p></div>';
+      '<p class="muted">Tick a treatment off when it’s given and the next due date rolls forward automatically. Add as many per cat as you need, each with its own schedule.</p></div>';
 
     if (!catsList.length) {
       return html + UI.empty('🪱', 'No cats yet', 'Add a cat first, then set up their flea and worming schedules.',
@@ -673,9 +755,7 @@
             '</div></div>';
         }).join('');
       }
-      const addBtn = b.list.length < S.MAX_TREATMENTS
-        ? '<button class="btn btn-small btn-ghost" data-act="treat-add" data-cat="' + b.cat.id + '">+ Add treatment (' + b.list.length + ' of ' + S.MAX_TREATMENTS + ')</button>'
-        : '';
+      const addBtn = '<button class="btn btn-small btn-ghost" data-act="treat-add" data-cat="' + b.cat.id + '">+ Add treatment</button>';
       return '<section class="card treat-card">' +
         '<div class="tc-head">' + UI.avatar(b.cat, 'a-md') + '<b>' + U.esc(b.cat.name) + '</b>' +
         '<span class="spacer"></span>' + addBtn + '</div>' + rows + '</section>';
@@ -692,8 +772,8 @@
     const kindOpts = Object.keys(S.KINDS).map(function (k) {
       return '<option value="' + k + '"' + (v.kind === k ? ' selected' : '') + '>' + S.KINDS[k] + '</option>';
     }).join('');
-    const unitOpts = ['day', 'week', 'month'].map(function (u) {
-      return '<option value="' + u + '"' + (v.unit === u ? ' selected' : '') + '>' + u + (u === 'day' ? 's' : 's') + '</option>';
+    const unitOpts = ['day', 'week', 'month', 'year'].map(function (u) {
+      return '<option value="' + u + '"' + (v.unit === u ? ' selected' : '') + '>' + u + 's</option>';
     }).join('');
 
     let history = '';
@@ -750,9 +830,13 @@
     });
   }
 
-  function givenModal(treatId) {
-    const t = S.getTreatment(treatId);
+  // shared "tick off" modal for treatments and vaccinations
+  function givenModal(id, isVax) {
+    const t = isVax ? S.getVax(id) : S.getTreatment(id);
     if (!t) return;
+    const get = isVax ? S.getVax : S.getTreatment;
+    const mark = isVax ? S.markVaxGiven : S.markTreatmentGiven;
+    const undo = isVax ? S.undoVaxGiven : S.undoTreatmentGiven;
     const cat = S.getCat(t.catId);
     const today = U.todayISO();
 
@@ -781,15 +865,244 @@
           e.preventDefault();
           const d = form.elements.date.value;
           if (!U.isISO(d)) return;
-          const snap = S.markTreatmentGiven(t.id, d);
+          const snap = mark(t.id, d);
           UI.closeModal();
-          UI.toast(t.name + ' given to ' + (cat ? cat.name : '?') + ' — next due ' + U.fmtDMY(S.getTreatment(t.id).nextDue) + '.', {
+          UI.toast(t.name + ' given to ' + (cat ? cat.name : '?') + ' — next due ' + U.fmtDMY(get(t.id).nextDue) + '.', {
             label: 'Undo',
-            onAction: function () { S.undoTreatmentGiven(t.id, d, snap); }
+            onAction: function () { undo(t.id, d, snap); }
           });
         });
       }
     });
+  }
+
+  // ============================== VACCINATIONS ==============================
+  function vaccines() {
+    const catsList = S.activeCats();
+    let html = '<div class="page-head"><h1>Vaccinations</h1>' +
+      '<p class="muted">Any schedule from a couple of weeks to several years. Tick one off when it’s given and the next due date rolls forward automatically.</p></div>';
+
+    if (!catsList.length) {
+      return html + UI.empty('💉', 'No cats yet', 'Add a cat first, then set up their vaccination schedules.',
+        '<div class="empty-actions"><button class="btn btn-primary" data-act="cat-add">+ Add a cat</button></div>');
+    }
+
+    // ---- all cats at a glance: next vaccination due ----
+    const overview = S.vaxOverview();
+    const ovBody = '<div class="card">' + overview.map(function (row) {
+      let mid, chip;
+      if (row.vax) {
+        mid = '<span class="dr-main"><b>' + U.esc(row.cat.name) + '</b> — ' + U.esc(row.vax.name) +
+          '<span class="muted small">Next due ' + U.fmtDMY(row.vax.nextDue) + ' · ' + U.esc(S.intervalLabel(row.vax).toLowerCase()) + '</span></span>';
+        chip = UI.dueChip(row.vax, S.VAX_SOON_DAYS);
+      } else {
+        mid = '<span class="dr-main"><b>' + U.esc(row.cat.name) + '</b>' +
+          '<span class="muted small">No vaccinations set up</span></span>';
+        chip = '<span class="chip c-muted">—</span>';
+      }
+      return '<div class="card-row">' + UI.avatar(row.cat, 'a-sm') + mid + chip +
+        (row.vax ? '<button class="btn btn-small" data-act="vax-given" data-id="' + row.vax.id + '">✓ Given</button>' : '') +
+        '</div>';
+    }).join('') + '</div>';
+    html += section('All cats — next vaccination due', ovBody);
+
+    // ---- per-cat schedules ----
+    const blocks = catsList.map(function (c) {
+      return { cat: c, list: S.vaxForCat(c.id), earliest: S.catEarliestVaxDue(c.id) };
+    }).sort(function (a, b) {
+      return (a.earliest || '9999') < (b.earliest || '9999') ? -1 : 1;
+    });
+
+    html += blocks.map(function (b) {
+      let rows;
+      if (!b.list.length) {
+        rows = '<p class="muted pad-s">No vaccinations yet.</p>';
+      } else {
+        rows = b.list.map(function (v) {
+          return '<div class="treat-row">' +
+            '<div class="tr-main"><b>' + U.esc(v.name) + '</b>' +
+            '<div class="muted small">' + U.esc(S.intervalLabel(v)) + ' · Last given: ' + (v.lastGiven ? U.fmtDMY(v.lastGiven) : '—') + '</div></div>' +
+            '<div class="tr-due">' + UI.dueChip(v, S.VAX_SOON_DAYS) +
+            '<div class="muted small">' + (v.nextDue ? U.fmtDMY(v.nextDue) : 'no date') + '</div></div>' +
+            '<div class="tr-actions">' +
+            '<button class="btn btn-small" data-act="vax-given" data-id="' + v.id + '">✓ Given</button>' +
+            '<button class="icon-btn" data-act="vax-edit" data-id="' + v.id + '" aria-label="Edit">✎</button>' +
+            '</div></div>';
+        }).join('');
+      }
+      return '<section class="card treat-card">' +
+        '<div class="tc-head">' + UI.avatar(b.cat, 'a-md') + '<b>' + U.esc(b.cat.name) + '</b>' +
+        '<span class="spacer"></span><button class="btn btn-small btn-ghost" data-act="vax-add" data-cat="' + b.cat.id + '">+ Add vaccination</button></div>' +
+        rows + '</section>';
+    }).join('');
+
+    return html;
+  }
+
+  function vaxModal(catId, id) {
+    const t = id ? S.getVax(id) : null;
+    const v = t || { catId: catId, name: '', every: 1, unit: 'year', lastGiven: '', nextDue: '', notes: '', history: [] };
+    const cat = S.getCat(v.catId);
+
+    const unitOpts = ['day', 'week', 'month', 'year'].map(function (u) {
+      return '<option value="' + u + '"' + (v.unit === u ? ' selected' : '') + '>' + u + 's</option>';
+    }).join('');
+
+    let history = '';
+    if (t && t.history.length) {
+      history = UI.field('History', '<div class="hist">' + t.history.slice().reverse().map(function (h, ri) {
+        const idx = t.history.length - 1 - ri;
+        return '<span class="chip c-muted hist-chip">' + U.fmtDMY(h.date) +
+          ' <button type="button" class="hist-x" data-act="vax-hist-del" data-id="' + t.id + '" data-idx="' + idx + '" aria-label="Remove">✕</button></span>';
+      }).join('') + '</div>', 'Removing a history entry doesn’t change the due dates above.');
+    }
+
+    const body =
+      '<form id="vax-form">' +
+      '<div class="modal-cat">' + UI.avatar(cat, 'a-md') + '<b>' + U.esc(cat ? cat.name : '?') + '</b></div>' +
+      UI.field('Vaccination *', '<input name="name" required maxlength="60" value="' + U.esc(v.name) + '" placeholder="e.g. F3 booster, FIV, rabies">') +
+      UI.field('Repeat every', '<div class="field-row tight">' +
+        '<input type="number" name="every" min="1" max="365" required value="' + v.every + '">' +
+        '<select name="unit">' + unitOpts + '</select></div>') +
+      '<div class="field-row">' +
+      UI.field('Last given', '<input type="date" name="lastGiven" value="' + U.esc(v.lastGiven) + '">') +
+      UI.field('Next due', '<input type="date" name="nextDue" value="' + U.esc(v.nextDue) + '">') +
+      '</div>' +
+      '<p class="f-hint">Leave “next due” blank and it’s worked out from “last given” + the repeat interval.</p>' +
+      UI.field('Notes', '<textarea name="notes" rows="2" placeholder="Brand, batch, which clinic, reaction to watch for…">' + U.esc(v.notes) + '</textarea>') +
+      history +
+      '<div class="modal-foot">' +
+      (t ? '<button type="button" class="btn btn-danger-ghost" data-act="vax-delete" data-id="' + t.id + '">Delete</button>' : '') +
+      '<span class="spacer"></span>' +
+      '<button type="submit" class="btn btn-primary">Save</button>' +
+      '</div></form>';
+
+    UI.modal({
+      title: t ? 'Edit vaccination' : 'Add vaccination',
+      body: body,
+      onOpen: function (wrap) {
+        U.$('#vax-form', wrap).addEventListener('submit', function (e) {
+          e.preventDefault();
+          const fd = new FormData(e.target);
+          const data = {
+            catId: v.catId, name: fd.get('name'),
+            every: fd.get('every'), unit: fd.get('unit'),
+            lastGiven: fd.get('lastGiven'), nextDue: fd.get('nextDue'), notes: fd.get('notes')
+          };
+          if (t) S.updateVax(t.id, data); else S.addVax(data);
+          UI.closeModal();
+          UI.toast('Saved ' + fd.get('name') + '.');
+        });
+      }
+    });
+  }
+
+  // ============================== CAT PROFILE ==============================
+  function severityChip(a) {
+    const cls = { severe: 'c-bad', moderate: 'c-warn', mild: 'c-muted' }[a.severity] || 'c-muted';
+    return '<span class="chip ' + cls + '">' + U.esc(S.SEVERITIES[a.severity] || a.severity) + '</span>';
+  }
+
+  // red warning strip listing a cat's allergies (used on profile + med form)
+  function allergyStrip(cat) {
+    if (!cat || !cat.allergies || !cat.allergies.length) return '';
+    return '<div class="allergy-strip">⚠️ <b>Allergies / adverse reactions:</b> ' +
+      cat.allergies.map(function (a) {
+        return U.esc(a.substance) + ' (' + U.esc(S.SEVERITIES[a.severity] || a.severity).toLowerCase() + ')';
+      }).join(', ') + '</div>';
+  }
+
+  function catProfileModal(id) {
+    const cat = S.getCat(id);
+    if (!cat) return;
+    const meta = [U.ageLabel(cat.dob), cat.dob ? 'born ' + U.fmtDMY(cat.dob) : '', cat.sex ? (cat.sex === 'female' ? 'Female' : 'Male') : '', cat.breed]
+      .filter(Boolean).join(' · ');
+
+    let body = '<div class="modal-cat">' + UI.avatar(cat, 'a-lg') +
+      '<div><b>' + U.esc(cat.name) + '</b><div class="muted small">' + U.esc(meta || '—') + '</div></div>' +
+      '<span class="spacer"></span>' +
+      '<button class="btn btn-small" data-act="cat-edit" data-id="' + cat.id + '">✎ Edit details</button></div>';
+
+    if (cat.notes) body += '<p class="muted small">' + U.esc(cat.notes) + '</p>';
+
+    // ---- allergies & adverse reactions ----
+    let algBody;
+    if (!cat.allergies.length) {
+      algBody = '<p class="muted small">None recorded. Add them under “Edit details”.</p>';
+    } else {
+      algBody = '<div class="card">' + cat.allergies.map(function (a) {
+        return '<div class="card-row">' +
+          '<span class="dr-main"><b>' + U.esc(a.substance) + '</b>' +
+          (a.reaction ? '<span class="muted small">' + U.esc(a.reaction) + '</span>' : '') + '</span>' +
+          severityChip(a) + '</div>';
+      }).join('') + '</div>';
+    }
+    body += '<h3 class="profile-h">⚠️ Allergies & adverse reactions</h3>' + algBody;
+
+    // ---- current medications ----
+    const current = S.medsForCat(cat.id, true);
+    body += '<h3 class="profile-h">💊 Current medications</h3>';
+    body += current.length
+      ? '<div class="card">' + current.map(function (m) {
+          return '<button class="card-row row-btn" data-act="med-edit" data-id="' + m.id + '">' +
+            '<span class="dr-main"><b>' + U.esc(m.name) + '</b>' +
+            '<span class="muted small">' + U.esc(m.dose || '') + (m.dose ? ' · ' : '') + m.timesPerDay + '× daily · started ' + U.fmtDMY(m.startDate) + '</span></span>' +
+            '</button>';
+        }).join('') + '</div>'
+      : '<p class="muted small">None.</p>';
+
+    // ---- past medications ----
+    const past = S.medsForCat(cat.id).filter(function (m) { return !m.active; })
+      .sort(function (a, b) { return (b.endDate || '') < (a.endDate || '') ? -1 : 1; });
+    body += '<h3 class="profile-h">🗂 Past medications</h3>';
+    body += past.length
+      ? '<div class="card">' + past.map(function (m) {
+          return '<button class="card-row row-btn" data-act="med-edit" data-id="' + m.id + '">' +
+            '<span class="dr-main"><b>' + U.esc(m.name) + '</b>' +
+            '<span class="muted small">' + U.esc(m.dose || '') + (m.dose ? ' · ' : '') +
+            U.fmtDMY(m.startDate) + ' → ' + (m.endDate ? U.fmtDMY(m.endDate) : '—') + '</span></span>' +
+            '</button>';
+        }).join('') + '</div>'
+      : '<p class="muted small">None yet — when a course is finished it moves here.</p>';
+
+    // ---- vaccination record ----
+    const vaxes = S.vaxForCat(cat.id);
+    body += '<h3 class="profile-h">💉 Vaccinations</h3>';
+    body += vaxes.length
+      ? '<div class="card">' + vaxes.map(function (v) {
+          return '<button class="card-row row-btn" data-act="vax-edit" data-id="' + v.id + '">' +
+            '<span class="dr-main"><b>' + U.esc(v.name) + '</b>' +
+            '<span class="muted small">' + U.esc(S.intervalLabel(v)) + ' · last ' + (v.lastGiven ? U.fmtDMY(v.lastGiven) : '—') +
+            (v.history.length ? ' · given ' + U.plural(v.history.length, 'time') : '') + '</span></span>' +
+            UI.dueChip(v, S.VAX_SOON_DAYS) + '</button>';
+        }).join('') + '</div>'
+      : '<p class="muted small">None set up.</p>';
+
+    // ---- flea & worm ----
+    const treats = S.treatmentsForCat(cat.id);
+    body += '<h3 class="profile-h">🛡️ Flea, worm & parasite treatments</h3>';
+    body += treats.length
+      ? '<div class="card">' + treats.map(function (tr) {
+          return '<button class="card-row row-btn" data-act="treat-edit" data-id="' + tr.id + '">' +
+            '<span class="dr-main"><b>' + U.esc(tr.name) + '</b> ' + kindChip(tr) +
+            '<span class="muted small">' + U.esc(S.intervalLabel(tr)) + ' · last ' + (tr.lastGiven ? U.fmtDMY(tr.lastGiven) : '—') + '</span></span>' +
+            UI.dueChip(tr) + '</button>';
+        }).join('') + '</div>'
+      : '<p class="muted small">None set up.</p>';
+
+    // ---- recent wellness entries ----
+    const logs = S.logsInRange('', '').filter(function (l) { return l.catId === cat.id; }).slice(0, 8);
+    body += '<h3 class="profile-h">📋 Recent wellness entries</h3>';
+    body += logs.length
+      ? '<div class="card">' + logs.map(function (l) {
+          return '<button class="card-row row-btn" data-act="log-add" data-cat="' + l.catId + '" data-date="' + l.date + '">' +
+            '<span class="dr-main"><b>' + U.fmtDMY(l.date) + '</b>' +
+            '<span class="muted small">' + U.esc((l.wellness || l.diet || '—').slice(0, 90)) + '</span></span>' +
+            appetiteChip(l.appetite) + '</button>';
+        }).join('') + '</div>'
+      : '<p class="muted small">No entries yet.</p>';
+
+    UI.modal({ title: cat.name, body: body, wide: true });
   }
 
   // ============================== VET ==============================
@@ -928,8 +1241,8 @@
       '</div>' +
       '<h3>Danger zone</h3>' +
       '<button class="btn btn-danger-ghost" data-act="erase-all">Erase all data</button>' +
-      '<p class="muted small about-line">Whisker Watch v1.1 · ' + c.cats + ' cats · ' + c.logs + ' log entries · ' +
-      c.meds + ' medications · ' + c.treatments + ' treatments · ' + c.visits + ' vet visits</p>' +
+      '<p class="muted small about-line">Whisker Watch v1.2 · ' + c.cats + ' cats · ' + c.logs + ' log entries · ' +
+      c.meds + ' medications · ' + c.treatments + ' treatments · ' + c.vaccinations + ' vaccinations · ' + c.visits + ' vet visits</p>' +
       '</div>';
 
     UI.modal({
@@ -946,9 +1259,9 @@
 
   window.Views = {
     state: state,
-    home: home, cats: cats, log: log, meds: meds, treatments: treatments, vet: vet,
-    catModal: catModal, logModal: logModal, medModal: medModal,
-    treatmentModal: treatmentModal, givenModal: givenModal, visitModal: visitModal,
+    home: home, cats: cats, log: log, meds: meds, treatments: treatments, vaccines: vaccines, vet: vet,
+    catModal: catModal, catProfileModal: catProfileModal, logModal: logModal, medModal: medModal,
+    treatmentModal: treatmentModal, vaxModal: vaxModal, givenModal: givenModal, visitModal: visitModal,
     settingsModal: settingsModal
   };
 })();

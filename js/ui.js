@@ -119,8 +119,8 @@
       }).join('') + '</select>';
   }
 
-  function dueChip(t) {
-    const info = window.Store.dueInfo(t);
+  function dueChip(t, soonDays) {
+    const info = window.Store.dueInfo(t, soonDays);
     const cls = { overdue: 'c-bad', soon: 'c-warn', ok: 'c-ok', none: 'c-muted' }[info.state];
     return '<span class="chip ' + cls + '">' + U.esc(info.label) + '</span>';
   }
